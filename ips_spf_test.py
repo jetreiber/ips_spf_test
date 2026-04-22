@@ -8,6 +8,9 @@ st.set_page_config(page_title="SPF IP Checker", layout="wide")
 
 st.title("🔍 SPF IP Checker (Modern)")
 
+# ---------------------------
+# INPUTS
+# ---------------------------
 domain = st.text_input("Enter domain", value="amasonses.com")
 
 input_method = st.radio("Choose input method:", ["Paste IPs", "Upload file"])
@@ -25,19 +28,24 @@ elif input_method == "Upload file":
         ips = uploaded_file.read().decode("utf-8").splitlines()
         ips = [ip.strip() for ip in ips if ip.strip()]
 
-# Get SPF record
+# ---------------------------
+# SPF LOGIC
+# ---------------------------
 def get_spf_record(domain):
     try:
         answers = dns.resolver.resolve(domain, 'TXT')
         for rdata in answers:
-            txt = "".join([part.decode() if isinstance(part, bytes) else part for part in rdata.strings])
+            txt = "".join([
+                part.decode() if isinstance(part, bytes) else part
+                for part in rdata.strings
+            ])
             if txt.startswith("v=spf1"):
                 return txt
-    except:
+    except Exception:
         return None
     return None
 
-# Simple SPF parser (ip4 only)
+
 def ip_in_spf(ip, spf_record):
     try:
         ip_obj = ipaddress.ip_address(ip)
@@ -59,44 +67,61 @@ def ip_in_spf(ip, spf_record):
     except Exception as e:
         return f"error: {e}"
 
-# Run check
-if st.button("🚀 Run SPF Check") and ips:
-    spf_record = get_spf_record(domain)
+# ---------------------------
+# RUN BUTTON (FIXED)
+# ---------------------------
+run_button = st.button("🚀 Run SPF Check")
 
-    if not spf_record:
-        st.error("No SPF record found")
+if run_button:
+    if not ips:
+        st.warning("⚠️ Please provide IPs first")
     else:
-        st.code(spf_record, language="text")
+        st.info(f"Checking {len(ips)} IPs...")
 
-        results = []
-        progress = st.progress(0)
+        spf_record = get_spf_record(domain)
 
-        def worker(ip):
-            return ip, ip_in_spf(ip, spf_record)
+        if not spf_record:
+            st.error("❌ No SPF record found")
+        else:
+            st.subheader("📄 SPF Record")
+            st.code(spf_record, language="text")
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
-            for i, result in enumerate(executor.map(worker, ips)):
-                results.append(result)
-                progress.progress((i + 1) / len(ips))
+            results = []
+            progress = st.progress(0)
 
-        df = pd.DataFrame(results, columns=["IP", "Result"])
+            def worker(ip):
+                return ip, ip_in_spf(ip, spf_record)
 
-        st.subheader("📊 Summary")
-        st.write({
-            "Pass": (df["Result"] == "pass").sum(),
-            "Fail": df["Result"].isin(["fail", "softfail"]).sum(),
-            "Neutral": (df["Result"] == "neutral").sum(),
-            "Errors": df["Result"].str.contains("error").sum()
-        })
+            with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+                for i, result in enumerate(executor.map(worker, ips)):
+                    results.append(result)
+                    progress.progress((i + 1) / len(ips))
 
-        st.dataframe(df, use_container_width=True)
+            df = pd.DataFrame(results, columns=["IP", "Result"])
 
-        st.download_button(
-            "⬇️ Download Results",
-            df.to_csv(index=False).encode(),
-            "spf_results.csv",
-            "text/csv"
-        )
+            # ---------------------------
+            # SUMMARY
+            # ---------------------------
+            st.subheader("📊 Summary")
+            st.write({
+                "Pass": (df["Result"] == "pass").sum(),
+                "Fail": df["Result"].isin(["fail", "softfail"]).sum(),
+                "Neutral": (df["Result"] == "neutral").sum(),
+                "Errors": df["Result"].str.contains("error").sum()
+            })
 
-elif st.button("🚀 Run SPF Check"):
-    st.warning("Provide IPs first")
+            # ---------------------------
+            # RESULTS TABLE
+            # ---------------------------
+            st.subheader("📋 Results")
+            st.dataframe(df, use_container_width=True)
+
+            # ---------------------------
+            # DOWNLOAD
+            # ---------------------------
+            st.download_button(
+                "⬇️ Download Results",
+                df.to_csv(index=False).encode(),
+                "spf_results.csv",
+                "text/csv"
+            )
