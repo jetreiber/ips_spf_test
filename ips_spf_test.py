@@ -6,7 +6,7 @@ import ipaddress
 
 st.set_page_config(page_title="SPF IP Checker", layout="wide")
 
-st.title("🔍 SPF IP Checker (Modern)")
+st.title("🔍 SPF IP Checker (Advanced)")
 
 # ---------------------------
 # INPUTS
@@ -29,46 +29,114 @@ elif input_method == "Upload file":
         ips = [ip.strip() for ip in ips if ip.strip()]
 
 # ---------------------------
-# SPF LOGIC
+# DNS HELPERS
 # ---------------------------
-def get_spf_record(domain):
+def resolve_txt(domain):
     try:
-        answers = dns.resolver.resolve(domain, 'TXT')
-        for rdata in answers:
-            txt = "".join([
-                part.decode() if isinstance(part, bytes) else part
-                for part in rdata.strings
-            ])
-            if txt.startswith("v=spf1"):
-                return txt
-    except Exception:
-        return None
+        return dns.resolver.resolve(domain, 'TXT')
+    except:
+        return []
+
+def resolve_a(domain):
+    try:
+        return [r.address for r in dns.resolver.resolve(domain, 'A')]
+    except:
+        return []
+
+def resolve_mx(domain):
+    try:
+        mx_records = dns.resolver.resolve(domain, 'MX')
+        hosts = [r.exchange.to_text().rstrip('.') for r in mx_records]
+        ips = []
+        for host in hosts:
+            ips.extend(resolve_a(host))
+        return ips
+    except:
+        return []
+
+def get_spf_record(domain):
+    for rdata in resolve_txt(domain):
+        txt = "".join([
+            part.decode() if isinstance(part, bytes) else part
+            for part in rdata.strings
+        ])
+        if txt.startswith("v=spf1"):
+            return txt
     return None
 
+# ---------------------------
+# SPF ENGINE (ADVANCED)
+# ---------------------------
+def check_ip_in_spf(ip, domain, visited=None):
+    if visited is None:
+        visited = set()
 
-def ip_in_spf(ip, spf_record):
-    try:
-        ip_obj = ipaddress.ip_address(ip)
-        parts = spf_record.split()
+    if domain in visited:
+        return False
+    visited.add(domain)
 
-        for part in parts:
-            if part.startswith("ip4:"):
-                cidr = part.replace("ip4:", "")
+    spf_record = get_spf_record(domain)
+    if not spf_record:
+        return False
+
+    ip_obj = ipaddress.ip_address(ip)
+    parts = spf_record.split()
+
+    for part in parts:
+        part = part.strip()
+
+        # ip4
+        if part.startswith("ip4:"):
+            cidr = part.replace("ip4:", "")
+            try:
                 if ip_obj in ipaddress.ip_network(cidr, strict=False):
-                    return "pass"
+                    return True
+            except:
+                continue
 
-        if "-all" in spf_record:
-            return "fail"
-        elif "~all" in spf_record:
-            return "softfail"
-        else:
-            return "neutral"
+        # include
+        elif part.startswith("include:"):
+            include_domain = part.replace("include:", "")
+            if check_ip_in_spf(ip, include_domain, visited):
+                return True
+
+        # a mechanism
+        elif part == "a" or part.startswith("a:"):
+            target = domain if part == "a" else part.split(":", 1)[1]
+            for resolved_ip in resolve_a(target):
+                if ip == resolved_ip:
+                    return True
+
+        # mx mechanism
+        elif part == "mx" or part.startswith("mx:"):
+            target = domain if part == "mx" else part.split(":", 1)[1]
+            for resolved_ip in resolve_mx(target):
+                if ip == resolved_ip:
+                    return True
+
+    return False
+
+
+def evaluate_spf(ip, domain):
+    try:
+        if check_ip_in_spf(ip, domain):
+            return "pass"
+
+        spf_record = get_spf_record(domain)
+
+        if spf_record:
+            if "-all" in spf_record:
+                return "fail"
+            elif "~all" in spf_record:
+                return "softfail"
+
+        return "neutral"
 
     except Exception as e:
         return f"error: {e}"
 
 # ---------------------------
-# RUN BUTTON (FIXED)
+# RUN BUTTON
 # ---------------------------
 run_button = st.button("🚀 Run SPF Check")
 
@@ -90,7 +158,7 @@ if run_button:
             progress = st.progress(0)
 
             def worker(ip):
-                return ip, ip_in_spf(ip, spf_record)
+                return ip, evaluate_spf(ip, domain)
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
                 for i, result in enumerate(executor.map(worker, ips)):
@@ -111,7 +179,7 @@ if run_button:
             })
 
             # ---------------------------
-            # RESULTS TABLE
+            # RESULTS
             # ---------------------------
             st.subheader("📋 Results")
             st.dataframe(df, use_container_width=True)
