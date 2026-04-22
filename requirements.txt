@@ -1,3 +1,4 @@
 streamlit
 pyspf
 pandas
+pydns
