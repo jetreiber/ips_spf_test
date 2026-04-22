@@ -1,13 +1,13 @@
 import streamlit as st
-import spf
+import dns.resolver
 import concurrent.futures
 import pandas as pd
+import ipaddress
 
 st.set_page_config(page_title="SPF IP Checker", layout="wide")
 
-st.title("🔍 SPF IP Checker")
+st.title("🔍 SPF IP Checker (Modern)")
 
-# User input
 domain = st.text_input("Enter domain", value="amasonses.com")
 
 input_method = st.radio("Choose input method:", ["Paste IPs", "Upload file"])
@@ -25,53 +25,78 @@ elif input_method == "Upload file":
         ips = uploaded_file.read().decode("utf-8").splitlines()
         ips = [ip.strip() for ip in ips if ip.strip()]
 
-# SPF check function
-def check_spf(ip_address):
+# Get SPF record
+def get_spf_record(domain):
     try:
-        result = spf.check2(ip_address, 'postmaster@' + domain, domain)
-        return ip_address, result[0] if len(result) == 3 else "unexpected"
-    except spf.TempError:
-        return ip_address, "tempfail"
-    except spf.PermError:
-        return ip_address, "permfail"
+        answers = dns.resolver.resolve(domain, 'TXT')
+        for rdata in answers:
+            txt = "".join([part.decode() if isinstance(part, bytes) else part for part in rdata.strings])
+            if txt.startswith("v=spf1"):
+                return txt
+    except:
+        return None
+    return None
+
+# Simple SPF parser (ip4 only)
+def ip_in_spf(ip, spf_record):
+    try:
+        ip_obj = ipaddress.ip_address(ip)
+        parts = spf_record.split()
+
+        for part in parts:
+            if part.startswith("ip4:"):
+                cidr = part.replace("ip4:", "")
+                if ip_obj in ipaddress.ip_network(cidr, strict=False):
+                    return "pass"
+
+        if "-all" in spf_record:
+            return "fail"
+        elif "~all" in spf_record:
+            return "softfail"
+        else:
+            return "neutral"
+
     except Exception as e:
-        return ip_address, f"error: {str(e)}"
+        return f"error: {e}"
 
-# Run button
+# Run check
 if st.button("🚀 Run SPF Check") and ips:
-    st.info(f"Checking {len(ips)} IPs...")
+    spf_record = get_spf_record(domain)
 
-    results = []
-    progress_bar = st.progress(0)
+    if not spf_record:
+        st.error("No SPF record found")
+    else:
+        st.code(spf_record, language="text")
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-        for i, result in enumerate(executor.map(check_spf, ips)):
-            results.append(result)
-            progress_bar.progress((i + 1) / len(ips))
+        results = []
+        progress = st.progress(0)
 
-    df = pd.DataFrame(results, columns=["IP", "Result"])
+        def worker(ip):
+            return ip, ip_in_spf(ip, spf_record)
 
-    # Summary
-    st.subheader("📊 Summary")
-    st.write({
-        "Pass": (df["Result"] == "pass").sum(),
-        "Fail": df["Result"].isin(["fail", "softfail"]).sum(),
-        "Neutral": (df["Result"] == "neutral").sum(),
-        "Errors": df["Result"].str.contains("error|tempfail|permfail").sum()
-    })
+        with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+            for i, result in enumerate(executor.map(worker, ips)):
+                results.append(result)
+                progress.progress((i + 1) / len(ips))
 
-    # Table
-    st.subheader("📋 Results")
-    st.dataframe(df, use_container_width=True)
+        df = pd.DataFrame(results, columns=["IP", "Result"])
 
-    # Download
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Download Results",
-        csv,
-        "spf_results.csv",
-        "text/csv"
-    )
+        st.subheader("📊 Summary")
+        st.write({
+            "Pass": (df["Result"] == "pass").sum(),
+            "Fail": df["Result"].isin(["fail", "softfail"]).sum(),
+            "Neutral": (df["Result"] == "neutral").sum(),
+            "Errors": df["Result"].str.contains("error").sum()
+        })
+
+        st.dataframe(df, use_container_width=True)
+
+        st.download_button(
+            "⬇️ Download Results",
+            df.to_csv(index=False).encode(),
+            "spf_results.csv",
+            "text/csv"
+        )
 
 elif st.button("🚀 Run SPF Check"):
-    st.warning("Please provide IPs first.")
+    st.warning("Provide IPs first")
