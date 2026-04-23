@@ -11,7 +11,7 @@ st.title("🔍 SPF IP Checker (Advanced)")
 # ---------------------------
 # INPUTS
 # ---------------------------
-domain = st.text_input("Enter domain", value="amasonses.com")
+domain = st.text_input("Enter domain", value="Enter domain")
 
 input_method = st.radio("Choose input method:", ["Paste IPs", "Upload file"])
 
